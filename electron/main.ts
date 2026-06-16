@@ -127,5 +127,47 @@ async function getAccessToken(code: string){
   const data = await response.json();
   console.log("Access token response:", data);
 
+  getCurrentlyPlaying(data.access_token);
+
+  return data;
+}
+
+async function getCurrentlyPlaying(token: string) {
+  const response = await fetch("https://api.spotify.com/v1/me/player/currently-playing", 
+    {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  console.log("Status:", response.status);
+  console.log("Status Text:", response.statusText);
+
+  if (response.status === 204) {
+    console.log("Nothing is currently playing");
+    return null;
+  }
+  
+  const text = await response.text();
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    console.log("Non-JSON response from Spotify:", text);
+    return null;
+  }
+
+  if (!data?.item) {
+    console.log("Nothing is currently playing");
+    return null;
+  }
+
+  console.log("CURRENT TRACK:");
+  console.log("Song:", data.item.name);
+  console.log("Artist:", data.item.artists?.map((a: any) => a.name).join(", "));
+  console.log("Album:", data.item.album.name);
+  console.log("Album Art URL:", data.item.album.images?.[0]?.url);
+
   return data;
 }
