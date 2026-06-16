@@ -1,7 +1,10 @@
-import { app, BrowserWindow } from 'electron'
+import dotenv from 'dotenv';
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+
+dotenv.config();
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -47,6 +50,40 @@ function createWindow() {
   }
 }
 
+ipcMain.on('spotify-login', (_, url) => {
+  console.log("Opening Spotify login...");
+
+  const authWindow = new BrowserWindow({
+    width: 500,
+    height: 700,
+    webPreferences: {
+      nodeIntegration: false,
+    }
+  });
+
+  authWindow.loadURL(url);
+  
+  authWindow.webContents.on('will-redirect', (event, newUrl) => {
+
+    if (newUrl.startsWith('http://127.0.0.1:8888/callback')) {
+      event.preventDefault();
+
+      const urlObj = new URL(newUrl);
+      const code = urlObj.searchParams.get('code');
+
+      if (!code) {
+        console.error("No authorization code found in callback URL");
+        return;
+      }
+
+      console.log("Authorization code received:", code);
+      getAccessToken(code);
+
+      authWindow.close();
+    }
+  })
+});
+
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
@@ -66,3 +103,29 @@ app.on('activate', () => {
 })
 
 app.whenReady().then(createWindow)
+
+async function getAccessToken(code: string){
+  const clientId = process.env.VITE_SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.VITE_SPOTIFY_CLIENT_SECRET;
+  const redirectUri = 'http://127.0.0.1:8888/callback';
+
+  const response = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization":
+        "Basic " +
+        Buffer.from(clientId + ":" + clientSecret).toString("base64"),
+    },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code: code,
+      redirect_uri: redirectUri,
+    }),
+  });
+  
+  const data = await response.json();
+  console.log("Access token response:", data);
+
+  return data;
+}
