@@ -1,4 +1,4 @@
-import require$$0 from "fs";
+import fs$1 from "fs";
 import require$$1 from "path";
 import require$$2 from "os";
 import require$$3 from "crypto";
@@ -10,7 +10,7 @@ function getDefaultExportFromCjs(x) {
   return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, "default") ? x["default"] : x;
 }
 var main = { exports: {} };
-const fs = require$$0;
+const fs = fs$1;
 const path = require$$1;
 const os = require$$2;
 const crypto = require$$3;
@@ -336,13 +336,17 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path$1.join(process.env.APP_ROOT
 let win;
 function createWindow() {
   win = new BrowserWindow({
-    icon: path$1.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
       preload: path$1.join(__dirname$1, "preload.mjs")
     }
   });
   win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+    const refreshToken2 = getSavedRefreshToken();
+    const isLoggedIn = !!refreshToken2;
+    win == null ? void 0 : win.webContents.send("auth-status", {
+      isLoggedIn,
+      refreshToken: refreshToken2
+    });
   });
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL);
@@ -386,7 +390,25 @@ app.on("activate", () => {
     createWindow();
   }
 });
-app.whenReady().then(createWindow);
+function getSavedRefreshToken() {
+  try {
+    const data = fs$1.readFileSync("spotify-token.json", "utf-8");
+    return JSON.parse(data).refresh_token;
+  } catch (err) {
+    return null;
+  }
+}
+app.whenReady().then(async () => {
+  createWindow();
+  refreshToken = getSavedRefreshToken();
+  if (refreshToken) {
+    await refreshAccessToken();
+  }
+  if (accessToken) {
+    await getCurrentlyPlaying(accessToken);
+  }
+  startSpotifyPolling();
+});
 async function getAccessToken(code) {
   const clientId = process.env.VITE_SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.VITE_SPOTIFY_CLIENT_SECRET;
@@ -404,12 +426,56 @@ async function getAccessToken(code) {
     })
   });
   const data = await response.json();
+  accessToken = data.access_token;
+  refreshToken = data.refresh_token;
   console.log("Access token response:", data);
-  getCurrentlyPlaying(data.access_token);
+  fs$1.writeFileSync(
+    "spotify-token.json",
+    JSON.stringify(
+      {
+        refresh_token: refreshToken
+      },
+      null,
+      2
+    )
+  );
+  if (!accessToken) {
+    console.log("Failed to obtain access token");
+    return;
+  }
+  win == null ? void 0 : win.webContents.send("auth-status", {
+    isLoggedIn: true,
+    refreshToken
+  });
+  console.log("Refresh token saved.");
+  await getCurrentlyPlaying(accessToken);
   return data;
 }
+async function refreshAccessToken() {
+  const clientId = process.env.VITE_SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.VITE_SPOTIFY_CLIENT_SECRET;
+  const response = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": "Basic " + Buffer.from(clientId + ":" + clientSecret).toString("base64")
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken
+    })
+  });
+  const data = await response.json();
+  console.log("Refresh token response:", data);
+  if (!data.access_token) {
+    console.log("Refresh failed");
+    accessToken = null;
+    return;
+  }
+  accessToken = data.access_token;
+}
 async function getCurrentlyPlaying(token) {
-  var _a, _b, _c;
+  var _a;
   const response = await fetch(
     "https://api.spotify.com/v1/me/player/currently-playing",
     {
@@ -420,6 +486,15 @@ async function getCurrentlyPlaying(token) {
   );
   console.log("Status:", response.status);
   console.log("Status Text:", response.statusText);
+  if (response.status === 401) {
+    console.log("Access token expired, refreshing...");
+    await refreshAccessToken();
+    if (!accessToken) {
+      console.log("Failed to refresh access token");
+      return null;
+    }
+    return getCurrentlyPlaying(accessToken);
+  }
   if (response.status === 204) {
     console.log("Nothing is currently playing");
     return null;
@@ -436,12 +511,29 @@ async function getCurrentlyPlaying(token) {
     console.log("Nothing is currently playing");
     return null;
   }
-  console.log("CURRENT TRACK:");
-  console.log("Song:", data.item.name);
-  console.log("Artist:", (_a = data.item.artists) == null ? void 0 : _a.map((a) => a.name).join(", "));
-  console.log("Album:", data.item.album.name);
-  console.log("Album Art URL:", (_c = (_b = data.item.album.images) == null ? void 0 : _b[0]) == null ? void 0 : _c.url);
+  const trackInfo = {
+    name: data.item.name,
+    artists: data.item.artists.map((artist) => artist.name).join(", "),
+    album: data.item.album.name,
+    albumCover: (_a = data.item.album.images[0]) == null ? void 0 : _a.url
+  };
+  win == null ? void 0 : win.webContents.send("current-track", trackInfo);
   return data;
+}
+let accessToken = null;
+let refreshToken = null;
+let pollingStarted = false;
+function startSpotifyPolling() {
+  if (pollingStarted) return;
+  pollingStarted = true;
+  setInterval(async () => {
+    try {
+      if (!accessToken) return;
+      await getCurrentlyPlaying(accessToken);
+    } catch (err) {
+      console.log("Polling error:", err);
+    }
+  }, 5e3);
 }
 export {
   MAIN_DIST,
